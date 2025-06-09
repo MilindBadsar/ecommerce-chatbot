@@ -138,6 +138,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000", # The default port for React development server
     "http://127.0.0.1:3000",
+    "https://ecommerce-chatbot-eight.vercel.app",
     # Add any other frontend URLs (e.g., "https://your-frontend-domain.com")
 ]
 
