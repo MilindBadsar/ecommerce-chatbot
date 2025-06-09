@@ -3,9 +3,9 @@
   bottom: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 100%;
+  width: 30%;
   max-width: 56rem;
-  background-color: #ffffff;
+  background-color: #b1b1b1;
   border-top: 4px solid #000000;
   border-left: 4px solid #000000;
   border-right: 4px solid #000000;
