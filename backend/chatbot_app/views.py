@@ -1,5 +1,5 @@
 import os
-import json # Import json for stringifying product data
+import json
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -7,8 +7,8 @@ from groq import Groq
 from dotenv import load_dotenv
 from django.db.models import Q
 from .models import ChatInteraction
-from product_app.models import Product, Category 
-from product_app.serializers import ProductSerializer 
+from product_app.models import Product, Category
+from product_app.serializers import ProductSerializer
 
 
 load_dotenv()
@@ -31,25 +31,49 @@ class ChatbotAPIView(APIView):
 
         # --- Search for products based on user query ---
         relevant_products_info = ""
+        matching_products = Product.objects.none() # Initialize as empty queryset
+
         try:
-            # Try to find products that match keywords in the user's message
-            # We will use the same search logic as the product search API
-            search_query = user_message 
+            # 1. Try to find products that directly match the user's message
+            initial_query = user_message.strip()
+            if initial_query:
+                matching_products = Product.objects.filter(
+                    Q(name__icontains=initial_query) | Q(description__icontains=initial_query)
+                ).distinct()
+
+            # 2. If no direct matches or if the query is a common synonym, broaden the search
+            if not matching_products.exists():
+                broad_search_terms = []
+                lower_user_message = user_message.lower()
+
+                if "phone" in lower_user_message or "phones" in lower_user_message:
+                    broad_search_terms.extend(["smartphone", "mobile phone", "cell phone", "handset"])
+                if "laptop" in lower_user_message or "notebook" in lower_user_message:
+                    broad_search_terms.append("laptop computer")
+                if "headphone" in lower_user_message or "headphones" in lower_user_message:
+                    broad_search_terms.append("earbuds")
+                # Add more synonyms/broad terms for other categories as needed
+
+                if broad_search_terms:
+                    broad_q_objects = Q()
+                    for term in broad_search_terms:
+                        broad_q_objects |= Q(name__icontains=term) | Q(description__icontains=term)
+                    
+                    # Combine with initial query if it exists, or just use broad terms
+                    if initial_query:
+                         matching_products = Product.objects.filter(
+                            (Q(name__icontains=initial_query) | Q(description__icontains=initial_query)) | broad_q_objects
+                         ).distinct()
+                    else:
+                        matching_products = Product.objects.filter(broad_q_objects).distinct()
             
-            # Filter products by name or description, limit to a few for concise LLM context
-            matching_products = Product.objects.filter(
-                Q(name__icontains=search_query) | Q(description__icontains=search_query)
-            ).distinct()[:5] # Limit to top 5 most relevant products for the LLM context
+            # Limit to top 5 products for concise LLM context
+            matching_products = matching_products[:5]
 
             if matching_products.exists():
-                # Serialize the found products
                 serializer = ProductSerializer(matching_products, many=True)
-                # Create a concise string representation of product details for the LLM
                 products_list_for_llm = []
                 for product_data in serializer.data:
-                    # Format product details concisely for the LLM
-                    # Exclude the full category object if it's too verbose for LLM context,
-                    # but include category name.
                     category_name = product_data['category']['name'] if product_data.get('category') else 'N/A'
                     products_list_for_llm.append(
                         f"Product Name: {product_data['name']}, "
@@ -62,17 +86,16 @@ class ChatbotAPIView(APIView):
                 # print(f"DEBUG: Relevant products found: {relevant_products_info}") # For debugging
 
         except Exception as e:
-            # Log error but don't prevent chatbot from responding
             self.stdout.write(f"Error during product search in chatbot view: {e}", self.style.ERROR)
             relevant_products_info = "\n\n(Note: Product search encountered an internal issue, respond generally.)"
 
 
-     
+        # --- System Prompt Refinement ---
         system_prompt = (
             "You are an AI sales assistant for an e-commerce store. "
             "Your goal is to help customers find products, provide details about specific products "
             "they ask about, and suggest relevant products based on their needs. "
-            "You have access to product information which will be provided in the user's query context. "
+            "You have access to product information which might be provided in the user's query context. "
             "Always be polite, helpful, and concise. "
             "If product information is provided, use it to answer the user's question directly or to make suggestions. "
             "If a user asks for product details, provide them from the given information. "
@@ -82,18 +105,18 @@ class ChatbotAPIView(APIView):
             "Keep responses natural and conversational. Include prices and stock if available for suggested products."
         )
 
-       
+  
+        # Embed relevant_products_info directly into the user's message for better context
+        full_user_content = user_message
+        if relevant_products_info:
+            full_user_content = f"{user_message}\n\n[Relevant Product Context:\n{relevant_products_info}\n]"
+        
         messages_for_llm = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": full_user_content}
         ]
-
-        # If relevant products were found, add them to the user message for context
-        if relevant_products_info:
-            messages_for_llm.append(
-                {"role": "user", "content": f"Additionally, here's some product data that might be relevant:\n{relevant_products_info}"}
-            )
-            # print(f"DEBUG: Messages sent to LLM: {messages_for_llm}") # For debugging
+            
+        # print(f"DEBUG: Messages sent to LLM: {messages_for_llm}") # For debugging
 
 
         try:
